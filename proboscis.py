@@ -1,33 +1,55 @@
 import sys
 import time
-from ConfigParser import ConfigParser
+import ConfigParser
 from datetime import datetime
-from optparse import OptionParser
-
+import argparse
+import json
 import pymongo
 
-parser = OptionParser()
-parser.add_option("-s", "--server", action="store", dest="server", default="localhost",
-                  help="The server where mongodb resides")
-options, args = parser.parse_args()    
+# Get options in 3 phases: first, set defaults, next, read proboscis.conf, finally,
+# parse command-line options
+host = 'localhost'
+db_name = 'mongolog'
+collection_name = 'log'
+time_key = 'created'
+message_key = 'msg'
+timestamp_format = '%Y-%m-%d %H:%M:%S.%f:'
 
-config = ConfigParser()
+config = ConfigParser.ConfigParser()
 config.read(['proboscis.conf'])
 
-host = options.server
-db_name = config.get('mongodb', 'db')
-collection_name = config.get('mongodb', 'collection')
-time_key = config.get('fields', 'time')
-message_key = config.get('fields', 'message')
-timestamp_format = config.get('output', 'timestamp_format')
+for section, option, varname in [
+    ('mongodb', 'host', 'host'),
+    ('mongodb', 'db', 'db_name'),
+    ('mongodb', 'collection', 'collection_name'),
+    ('fields', 'time', 'time_key'),
+    ('fields', 'message', 'message_key'),
+    ('output', 'timestamp_format', 'timestamp_format'),
+]:
+    try:
+        globals()[varname] = config.get(section, option)
+    except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
+        pass
+
+class StoreGlobal(argparse.Action):
+    """
+    Store an argument value as a global variable
+    """
+    def __call__(self, parser, namespace, value, option_string=None):
+        globals()[self.dest] = value
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-s", "--server", action=StoreGlobal, dest="host", default=host,
+                    help="The server where mongodb resides")
+parser.add_argument("filter_query", nargs="?", default="{}", help="Optional MongoDB query document")
+args = parser.parse_args()
+
+# Not configurable in proboscis.conf
+filter_query = json.loads(args.filter_query)
 
 db = pymongo.Connection(host)[db_name]
 
-if len(args) > 0:
-    filter_query = eval(args[0])
-else:
-    filter_query = {}
-
+db[collection_name].ensure_index(time_key)
 last_time = list(db[collection_name].find(filter_query, [time_key]).sort(time_key, pymongo.DESCENDING).limit(1))[0][time_key]
 
 while True:
